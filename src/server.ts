@@ -328,13 +328,15 @@ class GHLMCPHttpServer {
       res.redirect(callback.toString());
     });
 
-    this.app.post('/token', (req, res) => {
+    this.app.post('/token', (req, res): void => {
       const { code, grant_type } = req.body;
       if (grant_type !== 'authorization_code') {
-        return res.status(400).json({ error: 'unsupported_grant_type' });
+        res.status(400).json({ error: 'unsupported_grant_type' });
+        return;
       }
       if (!authCodes.has(code)) {
-        return res.status(400).json({ error: 'invalid_grant' });
+        res.status(400).json({ error: 'invalid_grant' });
+        return;
       }
       authCodes.delete(code);
       res.json({ access_token: MCP_SECRET, token_type: 'Bearer', expires_in: 86400 });
