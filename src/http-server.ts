@@ -107,7 +107,8 @@ class GHLMCPHttpServer {
     this.storeTools = new StoreTools(this.ghlClient);
     this.productsTools = new ProductsTools(this.ghlClient);
 
-    // Setup MCP handlers
+    // Setup OAuth, MCP handlers, and routes
+    this.setupOAuthRoutes();
     this.setupMCPHandlers();
     this.setupRoutes();
   }
@@ -124,8 +125,9 @@ class GHLMCPHttpServer {
       credentials: true
     }));
 
-    // Parse JSON requests
+    // Parse JSON and URL-encoded bodies (needed for OAuth)
     this.app.use(express.json());
+    this.app.use(express.urlencoded({ extended: true }));
 
     // Request logging
     this.app.use((req, res, next) => {
@@ -290,6 +292,52 @@ class GHLMCPHttpServer {
           `Tool execution failed: ${error}`
         );
       }
+    });
+  }
+
+
+  /**
+   * OAuth 2.0 endpoints required by Claude.ai
+   */
+  private setupOAuthRoutes(): void {
+    const BASE_URL = process.env.SERVER_URL || 'https://web-production-461e1.up.railway.app';
+    const MCP_SECRET = process.env.MCP_SECRET || 'ghl-mcp-token';
+    const authCodes = new Map<string, { redirect_uri: string; created: number }>();
+
+    this.app.get('/.well-known/oauth-authorization-server', (_req, res) => {
+      res.json({
+        issuer: BASE_URL,
+        authorization_endpoint: `${BASE_URL}/authorize`,
+        token_endpoint: `${BASE_URL}/token`,
+        response_types_supported: ['code'],
+        grant_types_supported: ['authorization_code'],
+        code_challenge_methods_supported: ['S256', 'plain'],
+      });
+    });
+
+    this.app.get('/authorize', (req, res) => {
+      const { redirect_uri, state } = req.query as Record<string, string>;
+      const code = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+      authCodes.set(code, { redirect_uri, created: Date.now() });
+      for (const [k, v] of authCodes.entries()) {
+        if (Date.now() - v.created > 600000) authCodes.delete(k);
+      }
+      const callback = new URL(redirect_uri);
+      callback.searchParams.set('code', code);
+      if (state) callback.searchParams.set('state', state);
+      res.redirect(callback.toString());
+    });
+
+    this.app.post('/token', (req, res) => {
+      const { code, grant_type } = req.body;
+      if (grant_type !== 'authorization_code') {
+        return res.status(400).json({ error: 'unsupported_grant_type' });
+      }
+      if (!authCodes.has(code)) {
+        return res.status(400).json({ error: 'invalid_grant' });
+      }
+      authCodes.delete(code);
+      res.json({ access_token: MCP_SECRET, token_type: 'Bearer', expires_in: 86400 });
     });
   }
 
