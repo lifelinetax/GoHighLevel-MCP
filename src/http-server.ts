@@ -8,6 +8,7 @@ import express from 'express';
 import cors from 'cors';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { 
   CallToolRequestSchema,
   ErrorCode,
@@ -433,11 +434,71 @@ class GHLMCPHttpServer {
       }
     };
 
-    // Handle both GET and POST for SSE and MCP endpoints
+    // SSE endpoint for ChatGPT compatibility
     this.app.get('/sse', handleSSE);
     this.app.post('/sse', handleSSE);
+
+    // StreamableHTTP endpoint for Claude compatibility
+    this.app.post('/mcp', async (req, res) => {
+      try {
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+        const mcpServer = new Server(
+          { name: 'ghl-mcp-server', version: '1.0.0' },
+          { capabilities: { tools: {} } }
+        );
+        mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
+          return { tools: [
+            ...this.contactTools.getToolDefinitions(),
+            ...this.conversationTools.getToolDefinitions(),
+            ...this.blogTools.getToolDefinitions(),
+            ...this.opportunityTools.getToolDefinitions(),
+            ...this.calendarTools.getToolDefinitions(),
+            ...this.emailTools.getToolDefinitions(),
+            ...this.locationTools.getToolDefinitions(),
+            ...this.emailISVTools.getToolDefinitions(),
+            ...this.socialMediaTools.getTools(),
+            ...this.mediaTools.getToolDefinitions(),
+            ...this.objectTools.getToolDefinitions(),
+            ...this.associationTools.getTools(),
+            ...this.customFieldV2Tools.getTools(),
+            ...this.workflowTools.getTools(),
+            ...this.surveyTools.getTools(),
+            ...this.storeTools.getTools(),
+            ...this.productsTools.getTools(),
+          ]};
+        });
+        mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+          const { name, arguments: args } = request.params;
+          let result: any;
+          if (this.isContactTool(name)) result = await this.contactTools.executeTool(name, args || {});
+          else if (this.isConversationTool(name)) result = await this.conversationTools.executeTool(name, args || {});
+          else if (this.isBlogTool(name)) result = await this.blogTools.executeTool(name, args || {});
+          else if (this.isOpportunityTool(name)) result = await this.opportunityTools.executeTool(name, args || {});
+          else if (this.isCalendarTool(name)) result = await this.calendarTools.executeTool(name, args || {});
+          else if (this.isEmailTool(name)) result = await this.emailTools.executeTool(name, args || {});
+          else if (this.isLocationTool(name)) result = await this.locationTools.executeTool(name, args || {});
+          else if (this.isEmailISVTool(name)) result = await this.emailISVTools.executeTool(name, args || {});
+          else if (this.isSocialMediaTool(name)) result = await this.socialMediaTools.executeTool(name, args || {});
+          else if (this.isMediaTool(name)) result = await this.mediaTools.executeTool(name, args || {});
+          else if (this.isObjectTool(name)) result = await this.objectTools.executeTool(name, args || {});
+          else if (this.isAssociationTool(name)) result = await this.associationTools.executeAssociationTool(name, args || {});
+          else if (this.isCustomFieldV2Tool(name)) result = await this.customFieldV2Tools.executeCustomFieldV2Tool(name, args || {});
+          else if (this.isWorkflowTool(name)) result = await this.workflowTools.executeWorkflowTool(name, args || {});
+          else if (this.isSurveyTool(name)) result = await this.surveyTools.executeSurveyTool(name, args || {});
+          else if (this.isStoreTool(name)) result = await this.storeTools.executeStoreTool(name, args || {});
+          else if (this.isProductsTool(name)) result = await this.productsTools.executeProductsTool(name, args || {});
+          else throw new McpError(ErrorCode.InternalError, `Unknown tool: ${name}`);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        });
+        res.on('close', () => transport.close());
+        await mcpServer.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } catch (err) {
+        console.error('[GHL MCP] StreamableHTTP error:', err);
+        if (!res.headersSent) res.status(500).json({ error: String(err) });
+      }
+    });
     this.app.get('/mcp', handleSSE);
-    this.app.post('/mcp', handleSSE);
 
     // Root endpoint with server info
     this.app.get('/', (req, res) => {
